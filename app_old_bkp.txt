@@ -1,0 +1,33 @@
+const express = require('express');
+const app = express();
+const port = process.env.PORT || 3000;
+const path = require('path');
+
+let socketConnected = new Set();
+
+const server = app.listen(port, () => {
+    console.log('server is running on port', port);
+});
+
+app.get('/', (req, res) => {
+    res.send('<h1 style = "text-align: center;background: dodgerblue;"><marquee behavior="scroll" direction="left">Chat App Rajkiran Jaiswar<sup>®</sup> - v1.0.0.01</marquee></h1>');
+});
+
+const io = require('socket.io')(server);
+
+app.use(express.static((path.join(__dirname, 'public'))));
+
+io.on('connection', onConnected);
+
+function onConnected(socket){
+    console.log('Socket Id: ', socket.id);
+    socketConnected.add(socket.id);
+
+    io.emit('clients-total', socketConnected.size);
+    
+    socket.on('disconnect', ()=>{
+        console.log('Disconnected socket: ', socket.id);
+        socketConnected.delete(socket.id);
+        io.emit('clients-total', socketConnected.size);
+    })
+}
