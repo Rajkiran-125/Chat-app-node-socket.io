@@ -11,6 +11,10 @@ let socketConnected = new Set();
 
 const port = process.env.PORT || 3000;
 
+app.get('/', (req, res) => {
+    res.send('<h1 style = "text-align: center;background: dodgerblue;"><marquee behavior="scroll" direction="left">Chat App Rajkiran Jaiswar<sup>®</sup> - v1.0.0.01</marquee></h1>');
+});
+
 io.on('connection', (socket) => {
     socket.on('join', (data) => {
         socket.join(data.room);
