@@ -24,7 +24,7 @@ io.on('connection', (socket) => {
     console.log('Socket Id',socket.id);
 
     socket.on('message', (data) => {
-        io.in(data.room).emit('new message', {user: data.user, message: data.message}, console.log('Message: >>> ',data.message));
+        io.in(data.room).emit('new message', {user: data.user, message: data.message, room: data.room}, console.log('Message: >>> ',data));
     });
 
     io.emit('clients-total', socketConnected.size);
