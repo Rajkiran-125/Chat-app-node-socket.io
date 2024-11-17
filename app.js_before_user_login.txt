@@ -9,8 +9,6 @@ let io = socketIO(server);
 
 let socketConnected = new Set();
 
-let users = new Map(); // To track user statuses
-
 const port = process.env.PORT || 3000;
 
 app.get('/', (req, res) => {
@@ -18,18 +16,9 @@ app.get('/', (req, res) => {
 });
 
 io.on('connection', (socket) => {
-
     socket.on('join', (data) => {
         socket.join(data.room);
         socket.broadcast.to(data.room).emit('user joined');
-    });
-
-    // Listen for the user joining
-    socket.on('user-joined', (data) => {
-        // Add user to the map
-        users.set(socket.id, data.username);
-        io.emit('user-status-changed', { username: data.username, status: 'online' });
-        console.log(`User ${data.username} is online`);
     });
 
     console.log('Socket Id',socket.id);
@@ -41,13 +30,6 @@ io.on('connection', (socket) => {
     io.emit('clients-total', socketConnected.size);
 
     socket.on('disconnect', ()=>{
-        const username = users.get(socket.id);
-        if (username) {
-            io.emit('user-status-changed', { username, status: 'offline' });
-            console.log(`User ${username} is offline`);
-        }
-        users.delete(socket.id);
-        
         console.log('Disconnected socket: ', socket.id);
         socketConnected.delete(socket.id);
         io.emit('clients-total', socketConnected.size);
