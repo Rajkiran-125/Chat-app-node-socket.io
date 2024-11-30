@@ -17,7 +17,7 @@ app.get('/', (req, res) => {
     res.send('<h1 style = "text-align: center;background: dodgerblue;"><marquee behavior="scroll" direction="left">Chat App Rajkiran Jaiswar<sup>®</sup> - v1.0.0.01</marquee></h1>');
 });
 
-app.use('/cron',require('./cron.js'));
+// app.use('/cron',require('./cron.js'));
 
 io.on('connection', (socket) => {
 
