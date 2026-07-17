@@ -15,6 +15,8 @@ const config = {
   port: parseInt(process.env.PORT, 10) || 3000,
   jwtSecret: process.env.JWT_SECRET || 'dev-secret-do-not-use-in-production',
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
+  mongoUri: (process.env.MONGODB_URI || '').trim(),
+  mongoDbName: (process.env.MONGODB_DB || 'chatapp').trim(),
   corsOrigins: rawOrigins === '*' ? '*' : rawOrigins ? rawOrigins.split(',').map((s) => s.trim()).filter(Boolean) : DEFAULT_ORIGINS,
   dataDir: process.env.DATA_DIR
     ? path.resolve(process.env.DATA_DIR)

@@ -1,14 +1,14 @@
 const authService = require('../services/auth.service');
 
-function register(req, res) {
+async function register(req, res) {
   const { userName, phone, avatar } = req.body || {};
-  const result = authService.register({ userName, phone, avatar });
+  const result = await authService.register({ userName, phone, avatar });
   res.status(201).json(result);
 }
 
-function login(req, res) {
+async function login(req, res) {
   const { phone } = req.body || {};
-  const result = authService.login({ phone });
+  const result = await authService.login({ phone });
   res.json(result);
 }
 

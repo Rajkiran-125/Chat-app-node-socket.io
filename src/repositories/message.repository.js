@@ -1,17 +1,13 @@
-const path = require('path');
 const crypto = require('crypto');
-const config = require('../config');
-const { createStore } = require('../store/json-store');
+const { collection, strip } = require('../store/mongo-store');
 
-// { byRoom: { [roomId]: Message[] } } - each room's messages ordered by createdAt.
-const store = createStore(path.join(config.dataDir, 'messages.json'), { byRoom: {} });
+// Each message is one document: { id, roomId, senderId, senderName, type,
+// content, status, clientId, createdAt }. Ordering within a room is by
+// (createdAt, id) — id (a UUID) is a stable tiebreaker when two messages share
+// an ISO-millisecond timestamp.
+const messages = () => collection('messages');
 
-function roomMessages(roomId) {
-  if (!store.data.byRoom[roomId]) store.data.byRoom[roomId] = [];
-  return store.data.byRoom[roomId];
-}
-
-function create({ roomId, senderId, senderName, type, content, status, clientId }) {
+async function create({ roomId, senderId, senderName, type, content, status, clientId }) {
   const message = {
     id: crypto.randomUUID(),
     roomId,
@@ -23,63 +19,76 @@ function create({ roomId, senderId, senderName, type, content, status, clientId 
     clientId: clientId || null,
     createdAt: new Date().toISOString()
   };
-  roomMessages(roomId).push(message);
-  store.save();
-  return message;
+  await messages().insertOne(message);
+  return strip(message);
 }
 
 /** Idempotency lookup: has this sender already stored a message with this clientId? */
-function findByClientId(roomId, senderId, clientId) {
+async function findByClientId(roomId, senderId, clientId) {
   if (!clientId) return null;
-  return (
-    (store.data.byRoom[roomId] || []).find(
-      (m) => m.clientId === clientId && m.senderId === senderId
-    ) || null
-  );
+  return strip(await messages().findOne({ roomId, senderId, clientId }));
 }
 
 /**
  * Page backwards through history: newest page first.
  * `before` is a message id - returns messages strictly older than it.
  */
-function listByRoom(roomId, { before, limit }) {
-  const messages = roomMessages(roomId);
-  let end = messages.length;
+async function listByRoom(roomId, { before, limit }) {
+  const filter = { roomId };
+
   if (before) {
-    const idx = messages.findIndex((m) => m.id === before);
+    const cursor = await messages().findOne(
+      { roomId, id: before },
+      { projection: { createdAt: 1, id: 1 } }
+    );
     // Unknown cursor: return an empty page rather than silently restarting at
     // the newest messages (which would duplicate content the client already has).
-    if (idx === -1) return { messages: [], hasMore: false };
-    end = idx;
+    if (!cursor) return { messages: [], hasMore: false };
+    filter.$or = [
+      { createdAt: { $lt: cursor.createdAt } },
+      { createdAt: cursor.createdAt, id: { $lt: cursor.id } }
+    ];
   }
-  const start = Math.max(0, end - limit);
-  return {
-    messages: messages.slice(start, end),
-    hasMore: start > 0
-  };
+
+  // Fetch newest-of-the-older-set first; grab one extra to detect hasMore.
+  const docs = await messages()
+    .find(filter)
+    .sort({ createdAt: -1, id: -1 })
+    .limit(limit + 1)
+    .toArray();
+
+  const hasMore = docs.length > limit;
+  const page = docs.slice(0, limit).reverse(); // return in ascending order
+  return { messages: page.map(strip), hasMore };
 }
 
-function lastMessage(roomId) {
-  const messages = store.data.byRoom[roomId] || [];
-  return messages.length ? messages[messages.length - 1] : null;
+async function lastMessage(roomId) {
+  const doc = await messages()
+    .find({ roomId })
+    .sort({ createdAt: -1, id: -1 })
+    .limit(1)
+    .next();
+  return strip(doc);
 }
 
 /** Messages sent TO userId (i.e. not by them) that they have not read yet. */
-function unreadCount(roomId, userId) {
-  const messages = store.data.byRoom[roomId] || [];
-  return messages.filter((m) => m.senderId !== userId && m.status !== 'read').length;
+async function unreadCount(roomId, userId) {
+  return messages().countDocuments({
+    roomId,
+    senderId: { $ne: userId },
+    status: { $ne: 'read' }
+  });
 }
 
 /** Mark all 'sent' messages addressed to recipientId as delivered. Returns affected ids. */
-function markDeliveredForRecipient(roomId, recipientId) {
-  const affected = [];
-  roomMessages(roomId).forEach((m) => {
-    if (m.senderId !== recipientId && m.status === 'sent') {
-      m.status = 'delivered';
-      affected.push(m.id);
-    }
-  });
-  if (affected.length) store.save();
+async function markDeliveredForRecipient(roomId, recipientId) {
+  const filter = { roomId, senderId: { $ne: recipientId }, status: 'sent' };
+  const affected = (
+    await messages().find(filter, { projection: { id: 1 } }).toArray()
+  ).map((m) => m.id);
+  if (affected.length) {
+    await messages().updateMany(filter, { $set: { status: 'delivered' } });
+  }
   return affected;
 }
 
@@ -89,26 +98,25 @@ function markDeliveredForRecipient(roomId, recipientId) {
  * when a change was made, otherwise null — so the caller can notify the right
  * sender rather than blindly the other room member.
  */
-function markMessageDelivered(roomId, messageId, recipientId) {
-  const message = roomMessages(roomId).find((m) => m.id === messageId);
-  if (message && message.senderId !== recipientId && message.status === 'sent') {
-    message.status = 'delivered';
-    store.save();
-    return message.senderId;
-  }
-  return null;
+async function markMessageDelivered(roomId, messageId, recipientId) {
+  const result = await messages().findOneAndUpdate(
+    { id: messageId, roomId, senderId: { $ne: recipientId }, status: 'sent' },
+    { $set: { status: 'delivered' } },
+    { returnDocument: 'after' }
+  );
+  const doc = result && result.value !== undefined ? result.value : result;
+  return doc ? doc.senderId : null;
 }
 
 /** Mark all messages addressed to readerId as read. Returns affected ids. */
-function markReadForRecipient(roomId, readerId) {
-  const affected = [];
-  roomMessages(roomId).forEach((m) => {
-    if (m.senderId !== readerId && m.status !== 'read') {
-      m.status = 'read';
-      affected.push(m.id);
-    }
-  });
-  if (affected.length) store.save();
+async function markReadForRecipient(roomId, readerId) {
+  const filter = { roomId, senderId: { $ne: readerId }, status: { $ne: 'read' } };
+  const affected = (
+    await messages().find(filter, { projection: { id: 1 } }).toArray()
+  ).map((m) => m.id);
+  if (affected.length) {
+    await messages().updateMany(filter, { $set: { status: 'read' } });
+  }
   return affected;
 }
 

@@ -3,7 +3,7 @@ const config = require('./config');
 const logger = require('./utils/logger');
 const app = require('./app');
 const { createSocketServer } = require('./sockets/socket-manager');
-const { flushAll } = require('./store/json-store');
+const mongoStore = require('./store/mongo-store');
 
 // Fail closed: never serve production traffic with the public dev secret,
 // otherwise anyone could forge a valid token for any user id.
@@ -15,9 +15,23 @@ if (config.env === 'production' && config.jwtSecret === 'dev-secret-do-not-use-i
 const server = http.createServer(app);
 const io = createSocketServer(server);
 
-server.listen(config.port, () => {
-  logger.info(`ChatApp API listening on port ${config.port} (${config.env})`);
-});
+// Connect to MongoDB before accepting traffic — a live DB is required to serve
+// any request, so fail fast (exit 1) if the connection can't be established.
+async function start() {
+  try {
+    await mongoStore.connect();
+  } catch (err) {
+    logger.error(`FATAL: could not connect to MongoDB: ${err.message}`);
+    process.exit(1);
+    return;
+  }
+
+  server.listen(config.port, () => {
+    logger.info(`ChatApp API listening on port ${config.port} (${config.env})`);
+  });
+}
+
+start();
 
 // Optional keep-alive ping for free-tier hosts that sleep on idle.
 if (config.keepAliveUrl) {
@@ -31,17 +45,15 @@ if (config.keepAliveUrl) {
 
 function shutdown(signal) {
   logger.info(`${signal} received, shutting down...`);
-  // Close sockets first so disconnect handlers record lastSeenAt in memory,
-  // THEN flush to disk so those writes are persisted.
+  // Close sockets first so disconnect handlers fire, then drain HTTP and close
+  // the DB connection last.
   io.close();
   server.close(() => {
-    flushAll();
-    process.exit(0);
+    mongoStore.close().finally(() => process.exit(0));
   });
-  // Force-exit if connections refuse to drain (still flush first).
+  // Force-exit if connections refuse to drain (still close the DB first).
   setTimeout(() => {
-    flushAll();
-    process.exit(0);
+    mongoStore.close().finally(() => process.exit(0));
   }, 5000).unref();
 }
 

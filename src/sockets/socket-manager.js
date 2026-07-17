@@ -35,14 +35,18 @@ function createSocketServer(httpServer) {
   });
 
   // Handshake auth: socket.handshake.auth.token must be a valid JWT.
-  io.use((socket, next) => {
-    const user = authService.resolveToken(socket.handshake.auth?.token);
-    if (!user) return next(new Error('unauthorized'));
-    socket.data.user = user;
-    return next();
+  io.use(async (socket, next) => {
+    try {
+      const user = await authService.resolveToken(socket.handshake.auth?.token);
+      if (!user) return next(new Error('unauthorized'));
+      socket.data.user = user;
+      return next();
+    } catch {
+      return next(new Error('unauthorized'));
+    }
   });
 
-  io.on('connection', (socket) => {
+  io.on('connection', async (socket) => {
     const user = socket.data.user;
     const limiter = createSocketRateLimiter();
     logger.info(`socket connected: ${socket.id} (${user.userName})`);
@@ -57,16 +61,18 @@ function createSocketServer(httpServer) {
         online: true,
         lastSeenAt: null
       });
-      deliverPendingMessages(io, user.id);
+      deliverPendingMessages(io, user.id).catch((err) =>
+        logger.warn(`deliverPendingMessages failed: ${err.message}`)
+      );
     }
 
     // Give the connecting client the current presence snapshot.
-    socket.emit('presence:list', buildPresenceList(user.id));
+    socket.emit('presence:list', await buildPresenceList(user.id));
 
     socket.on('room:join', (payload, ack) => {
-      safe(ack, () => {
+      safe(ack, async () => {
         const roomId = requireRoomId(payload);
-        roomService.assertMembership(roomId, user.id);
+        await roomService.assertMembership(roomId, user.id);
         socket.join(roomId);
         return { ok: true };
       });
@@ -78,12 +84,12 @@ function createSocketServer(httpServer) {
     });
 
     socket.on('message:send', (payload, ack) => {
-      safe(ack, () => {
+      safe(ack, async () => {
         if (!limiter.allow('message', 20)) {
           throw badRequest('You are sending messages too quickly');
         }
         const roomId = requireRoomId(payload);
-        const { message, recipientId } = messageService.createMessage({
+        const { message, recipientId } = await messageService.createMessage({
           roomId,
           sender: user,
           type: payload.type,
@@ -97,13 +103,13 @@ function createSocketServer(httpServer) {
       });
     });
 
-    socket.on('message:delivered', (payload) => {
+    socket.on('message:delivered', async (payload) => {
       try {
         if (!limiter.allow('status', 60)) return;
         const roomId = requireRoomId(payload);
-        roomService.assertMembership(roomId, user.id);
+        await roomService.assertMembership(roomId, user.id);
         if (typeof payload.messageId !== 'string') return;
-        const senderId = messageRepository.markMessageDelivered(roomId, payload.messageId, user.id);
+        const senderId = await messageRepository.markMessageDelivered(roomId, payload.messageId, user.id);
         if (senderId) {
           io.to(`user:${senderId}`).emit('message:status', {
             roomId,
@@ -116,12 +122,12 @@ function createSocketServer(httpServer) {
       }
     });
 
-    socket.on('message:read', (payload) => {
+    socket.on('message:read', async (payload) => {
       try {
         if (!limiter.allow('status', 60)) return;
         const roomId = requireRoomId(payload);
-        const room = roomService.assertMembership(roomId, user.id);
-        const messageIds = messageRepository.markReadForRecipient(roomId, user.id);
+        const room = await roomService.assertMembership(roomId, user.id);
+        const messageIds = await messageRepository.markReadForRecipient(roomId, user.id);
         if (messageIds.length) {
           const senderId = roomService.otherMemberId(room, user.id);
           io.to(`user:${senderId}`).emit('message:status', {
@@ -137,11 +143,11 @@ function createSocketServer(httpServer) {
       }
     });
 
-    socket.on('typing', (payload) => {
+    socket.on('typing', async (payload) => {
       try {
         if (!limiter.allow('typing', 30)) return;
         const roomId = requireRoomId(payload);
-        const room = roomService.assertMembership(roomId, user.id);
+        const room = await roomService.assertMembership(roomId, user.id);
         const otherId = roomService.otherMemberId(room, user.id);
         io.to(`user:${otherId}`).emit('typing', {
           roomId,
@@ -171,9 +177,10 @@ function createSocketServer(httpServer) {
 }
 
 /** All messages that were waiting for this user become 'delivered'; tell the senders. */
-function deliverPendingMessages(io, userId) {
-  roomRepository.listForUser(userId).forEach((room) => {
-    const messageIds = messageRepository.markDeliveredForRecipient(room.id, userId);
+async function deliverPendingMessages(io, userId) {
+  const rooms = await roomRepository.listForUser(userId);
+  for (const room of rooms) {
+    const messageIds = await messageRepository.markDeliveredForRecipient(room.id, userId);
     if (messageIds.length) {
       const senderId = room.memberIds.find((id) => id !== userId);
       io.to(`user:${senderId}`).emit('message:status', {
@@ -182,12 +189,12 @@ function deliverPendingMessages(io, userId) {
         status: 'delivered'
       });
     }
-  });
+  }
 }
 
-function buildPresenceList(exceptUserId) {
-  return userRepository
-    .all()
+async function buildPresenceList(exceptUserId) {
+  const users = await userRepository.all();
+  return users
     .filter((u) => u.id !== exceptUserId)
     .map((u) => ({
       userId: u.id,
@@ -210,9 +217,9 @@ function requireRoomId(payload) {
 }
 
 /** Run a handler, routing thrown errors into the ack instead of crashing. */
-function safe(ack, fn) {
+async function safe(ack, fn) {
   try {
-    const result = fn();
+    const result = await fn();
     if (typeof ack === 'function') ack(result);
   } catch (err) {
     logger.warn('socket event rejected:', err.message);

@@ -28,27 +28,27 @@ function signToken(user) {
 }
 
 /** Returns the user for a valid token, otherwise null. */
-function resolveToken(token) {
+async function resolveToken(token) {
   if (!token) return null;
   try {
     // Pin the algorithm so a token cannot be forged with alg:none or a swapped algorithm.
     const payload = jwt.verify(token, config.jwtSecret, { algorithms: ['HS256'] });
-    return userRepository.findById(payload.sub);
+    return await userRepository.findById(payload.sub);
   } catch {
     return null;
   }
 }
 
-function register({ userName, phone, avatar }) {
+async function register({ userName, phone, avatar }) {
   const cleanName = validateUserName(userName);
   const cleanPhone = validatePhone(phone);
   const cleanAvatar = validateAvatar(avatar);
 
-  if (userRepository.findByPhone(cleanPhone)) {
+  if (await userRepository.findByPhone(cleanPhone)) {
     throw ApiError.conflict('A user with this phone number already exists');
   }
 
-  const user = userRepository.create({
+  const user = await userRepository.create({
     userName: cleanName,
     phone: cleanPhone,
     avatar: cleanAvatar
@@ -56,9 +56,9 @@ function register({ userName, phone, avatar }) {
   return { user: toPublicUser(user), token: signToken(user) };
 }
 
-function login({ phone }) {
+async function login({ phone }) {
   const cleanPhone = validatePhone(phone);
-  const user = userRepository.findByPhone(cleanPhone);
+  const user = await userRepository.findByPhone(cleanPhone);
   if (!user) {
     throw ApiError.notFound('No account found for this phone number');
   }

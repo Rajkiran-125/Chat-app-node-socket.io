@@ -1,4 +1,5 @@
 const userRepository = require('../repositories/user.repository');
+const logger = require('../utils/logger');
 
 // userId -> Set<socketId>. A user is online while they have >= 1 live socket.
 const sockets = new Map();
@@ -21,7 +22,11 @@ function removeSocket(userId, socketId) {
   set.delete(socketId);
   if (set.size === 0) {
     sockets.delete(userId);
-    userRepository.setLastSeen(userId, new Date().toISOString());
+    // Fire-and-forget: presence bookkeeping stays synchronous; the lastSeenAt
+    // write persists in the background (matches the old debounced-save timing).
+    userRepository
+      .setLastSeen(userId, new Date().toISOString())
+      .catch((err) => logger.warn(`Failed to persist lastSeen for ${userId}: ${err.message}`));
     return true;
   }
   return false;

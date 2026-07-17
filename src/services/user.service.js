@@ -8,25 +8,34 @@ const { toPublicProfile } = require('./auth.service');
  * Everything the sidebar needs in one call: every other user plus their
  * DM room with me (if any), its last message and my unread count.
  */
-function sidebarList(currentUserId) {
-  return userRepository
-    .all()
-    .filter((u) => u.id !== currentUserId)
-    .map((u) => {
-      const room = roomRepository.findDm(currentUserId, u.id);
+async function sidebarList(currentUserId) {
+  const users = await userRepository.all();
+  const others = users.filter((u) => u.id !== currentUserId);
+
+  const entries = await Promise.all(
+    others.map(async (u) => {
+      const room = await roomRepository.findDm(currentUserId, u.id);
+      const [lastMessage, unreadCount] = room
+        ? await Promise.all([
+            messageRepository.lastMessage(room.id),
+            messageRepository.unreadCount(room.id, currentUserId)
+          ])
+        : [null, 0];
       return {
         ...toPublicProfile(u),
         online: presenceService.isOnline(u.id),
         roomId: room ? room.id : null,
-        lastMessage: room ? messageRepository.lastMessage(room.id) : null,
-        unreadCount: room ? messageRepository.unreadCount(room.id, currentUserId) : 0
+        lastMessage,
+        unreadCount
       };
     })
-    .sort((a, b) => {
-      const timeA = a.lastMessage ? a.lastMessage.createdAt : a.createdAt;
-      const timeB = b.lastMessage ? b.lastMessage.createdAt : b.createdAt;
-      return timeB.localeCompare(timeA);
-    });
+  );
+
+  return entries.sort((a, b) => {
+    const timeA = a.lastMessage ? a.lastMessage.createdAt : a.createdAt;
+    const timeB = b.lastMessage ? b.lastMessage.createdAt : b.createdAt;
+    return timeB.localeCompare(timeA);
+  });
 }
 
 module.exports = { sidebarList };

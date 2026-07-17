@@ -1,23 +1,22 @@
-const path = require('path');
 const crypto = require('crypto');
-const config = require('../config');
-const { createStore } = require('../store/json-store');
+const { collection, strip } = require('../store/mongo-store');
 
-const store = createStore(path.join(config.dataDir, 'users.json'), { users: [] });
+const users = () => collection('users');
 
-function all() {
-  return store.data.users;
+async function all() {
+  const docs = await users().find({}).toArray();
+  return docs.map(strip);
 }
 
-function findById(id) {
-  return store.data.users.find((u) => u.id === id) || null;
+async function findById(id) {
+  return strip(await users().findOne({ id }));
 }
 
-function findByPhone(phone) {
-  return store.data.users.find((u) => u.phone === phone) || null;
+async function findByPhone(phone) {
+  return strip(await users().findOne({ phone }));
 }
 
-function create({ userName, phone, avatar }) {
+async function create({ userName, phone, avatar }) {
   const user = {
     id: crypto.randomUUID(),
     userName,
@@ -26,18 +25,13 @@ function create({ userName, phone, avatar }) {
     createdAt: new Date().toISOString(),
     lastSeenAt: null
   };
-  store.data.users.push(user);
-  store.save();
-  return user;
+  await users().insertOne(user);
+  return strip(user);
 }
 
-function setLastSeen(id, isoDate) {
-  const user = findById(id);
-  if (user) {
-    user.lastSeenAt = isoDate;
-    store.save();
-  }
-  return user;
+async function setLastSeen(id, isoDate) {
+  await users().updateOne({ id }, { $set: { lastSeenAt: isoDate } });
+  return findById(id);
 }
 
 module.exports = { all, findById, findByPhone, create, setLastSeen };
